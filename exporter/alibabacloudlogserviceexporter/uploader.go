@@ -25,6 +25,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const MaxLogSize = 4 * 1024 * 1024
+
 // LogServiceClient log Service's client wrapper
 type LogServiceClient interface {
 	// SendLogs send message to LogService
@@ -84,7 +86,28 @@ func NewLogServiceClient(config *Config, logger *zap.Logger) (LogServiceClient, 
 
 // SendLogs send message to LogService
 func (c *logServiceClientImpl) SendLogs(logs []*sls.Log) error {
-	return c.clientInstance.SendLogListWithCallBack(c.project, c.logstore, c.topic, c.source, logs, c)
+	var sendLogs []*sls.Log
+	var sendLength int
+	for _, log := range logs {
+		sendLength += calculateLogSize(log)
+		sendLogs = append(sendLogs, log)
+
+		if sendLength > MaxLogSize {
+			if err := c.clientInstance.SendLogListWithCallBack(c.project, c.logstore, c.topic, c.source, sendLogs, c); err != nil {
+				return err
+			}
+			sendLogs = sendLogs[:0]
+			sendLength = 0
+		}
+	}
+
+	if len(sendLogs) > 0 {
+		if err := c.clientInstance.SendLogListWithCallBack(c.project, c.logstore, c.topic, c.source, sendLogs, c); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Success is impl of producer.CallBack
@@ -98,4 +121,13 @@ func (c *logServiceClientImpl) Fail(result *producer.Result) {
 		zap.String("code", result.GetErrorCode()),
 		zap.String("error_message", result.GetErrorMessage()),
 		zap.String("request_id", result.GetRequestId()))
+}
+
+func calculateLogSize(log *sls.Log) int {
+	size := 4
+	for _, content := range log.Contents {
+		size += len(*content.Key)
+		size += len(*content.Value)
+	}
+	return size
 }
